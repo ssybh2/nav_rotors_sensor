@@ -1,6 +1,8 @@
+<?xml version="1.0" ?>
 <sdf version='1.6'>
   <model name="swift_pico">
     <pose>0 0 0 0 0 0</pose>
+    
     <link name='swift_pico/base_link'>
       <pose frame=''>0 0 0 0 -0 0</pose>
       <inertial>
@@ -39,6 +41,148 @@
       </visual>
     </link>
 
+    <link name='swift_pico/altimeter_link'>
+      <pose>0 0 -0.15 0 1.570796 0</pose>
+      <inertial>
+        <mass>0.01</mass>
+        <inertia>
+          <ixx>1e-05</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>1e-05</iyy><iyz>0</iyz><izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name='altimeter_visual'>
+        <geometry><cylinder><radius>0.01</radius><length>0.02</length></cylinder></geometry>
+        <material><ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse></material>
+      </visual>
+      <sensor name="altimeter_sensor" type="gpu_lidar">
+        <pose>0 0 0 0 0 0</pose>
+        <always_on>true</always_on>
+        <update_rate>50.0</update_rate>
+        <visualize>true</visualize>
+        <topic>/altimeter_scan</topic>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0.0</min_angle>
+              <max_angle>0.0</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.05</min>
+            <max>10.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+      </sensor>
+    </link>
+    <joint name='altimeter_joint' type='fixed'>
+      <parent>swift_pico/base_link</parent>
+      <child>swift_pico/altimeter_link</child>
+    </joint>
+
+    <link name='swift_pico/laser_link'>
+      <pose>0 0 0.1 0 0 0</pose> <inertial>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>1e-05</iyy><iyz>0</iyz><izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name='laser_visual'>
+        <geometry><cylinder><radius>0.03</radius><length>0.04</length></cylinder></geometry>
+        <material><ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse></material>
+      </visual>
+      <sensor name="laser_sensor" type="gpu_lidar">
+        <pose>0 0 0 0 0 0</pose>
+        <always_on>true</always_on>
+        <update_rate>20.0</update_rate> <visualize>true</visualize>
+        <topic>/scan</topic>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.15</min>
+            <max>12.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </ray>
+      </sensor>
+    </link>
+    <joint name='laser_joint' type='fixed'>
+      <parent>swift_pico/base_link</parent>
+      <child>swift_pico/laser_link</child>
+    </joint>
+    <link name='imu_link'>
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>0.01</mass>
+        <inertia>
+          <ixx>1e-05</ixx> <ixy>0</ixy> <ixz>0</ixz>
+          <iyy>1e-05</iyy> <iyz>0</iyz> <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <sensor name="imu_sensor" type="imu">
+        <always_on>1</always_on>
+        <update_rate>200</update_rate>
+        <visualize>true</visualize>
+        <topic>imu</topic>
+      </sensor>
+    </link>
+    <joint name='imu_joint' type='fixed'>
+      <parent>swift_pico/base_link</parent>
+      <child>imu_link</child>
+    </joint>
+
+    <link name='camera_link'>
+      <pose>0.1 0 0 0 0 0</pose> <inertial>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-04</ixx> <ixy>0</ixy> <ixz>0</ixz>
+          <iyy>1e-04</iyy> <iyz>0</iyz> <izz>1e-04</izz>
+        </inertia>
+      </inertial>
+      <visual name='camera_visual'>
+        <geometry>
+          <box>
+            <size>0.02 0.05 0.02</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>1 0 0 1</ambient> <diffuse>1 0 0 1</diffuse>
+        </material>
+      </visual>
+      <sensor name="rgbd_camera" type="rgbd_camera">
+        <camera>
+          <horizontal_fov>1.57</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>10.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>15</update_rate>
+        <visualize>true</visualize>
+        <topic>/camera</topic>
+      </sensor>
+    </link>
+    <joint name='camera_joint' type='fixed'>
+      <parent>swift_pico/base_link</parent>
+      <child>camera_link</child>
+    </joint>
+
     <link name="marker_link">
         <pose frame=''>0 0 0 0 -0 0</pose>
         <inertial>
@@ -52,22 +196,20 @@
           <izz>1.66e-06</izz>
         </inertia>
       </inertial>
-				<visual name='Whycon_Marker'>
-					<pose>0.0 0 0 1.57 0 0</pose>
-					<geometry>
+      <visual name='Whycon_Marker'>
+          <pose>0.0 0 0 1.57 0 0</pose>
+          <geometry>
             <mesh>
               <scale>0.5 0.5 0.5</scale>
               <uri>model://swift_pico/meshes/whycon2.obj</uri>
             </mesh>
-					</geometry>
-				</visual>
-			</link>
-
+          </geometry>
+      </visual>
+    </link>
     <joint name="marker_joint" type="fixed">
-
       <child>marker_link</child>
       <parent>swift_pico/base_link</parent>
-		</joint>
+    </joint>
 
     <link name='swift_pico/m1'>
       <pose frame=''>0.19 -0.19 -0.12 0 -0 0</pose>
@@ -133,6 +275,7 @@
         <use_parent_model_frame>1</use_parent_model_frame>
       </axis>
     </joint>
+
     <link name='swift_pico/m2'>
       <pose frame=''>-0.19 0.19 -0.12 0 -0 0</pose>
       <inertial>
@@ -197,6 +340,7 @@
         <use_parent_model_frame>1</use_parent_model_frame>
       </axis>
     </joint>
+
     <link name='swift_pico/m3'>
       <pose frame=''>0.19 0.19 -0.12 0 -0 0</pose>
       <inertial>
@@ -237,10 +381,10 @@
           </mesh>
         </geometry>
         <material>
-            <ambient>1 0 1 1</ambient>
-            <diffuse>1 0 1 1</diffuse>
-            <specular>1 0 1 1</specular>
-          </material>
+          <ambient>1 0 1 1</ambient>
+          <diffuse>1 0 1 1</diffuse>
+          <specular>1 1 0 1</specular>
+      </material>
       </visual>
       <gravity>1</gravity>
       <velocity_decay/>
@@ -261,6 +405,7 @@
         <use_parent_model_frame>1</use_parent_model_frame>
       </axis>
     </joint>
+
     <link name='swift_pico/m4'>
       <pose frame=''>-0.19 -0.19 -0.12 0 -0 0</pose>
       <inertial>
@@ -325,7 +470,8 @@
         <use_parent_model_frame>1</use_parent_model_frame>
       </axis>
     </joint>
-      <plugin
+
+    <plugin
         filename="ignition-gazebo-multicopter-motor-model-system"
         name="gz::sim::systems::MulticopterMotorModel">
         <robotNamespace>rotors</robotNamespace>
@@ -412,7 +558,6 @@
         <dimensions>3</dimensions>
         <update_rate>100</update_rate>
       </plugin>
-
 
   </model>
 </sdf>

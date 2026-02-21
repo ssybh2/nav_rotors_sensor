@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
@@ -5,14 +6,13 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 import numpy as np
 import threading
 import math
-import time
-# 消息类型
+
 from geometry_msgs.msg import Vector3
 from std_msgs.msg import String, Float64
 from nav_msgs.msg import Odometry
 from actuator_msgs.msg import Actuators
-# 导入配置
 from softdrone_controller.config import controller_params as cfg
+
 # ==================== 数学工具 ====================
 def wrap_pi(a):
     return float(np.arctan2(np.sin(a), np.cos(a)))
@@ -68,18 +68,14 @@ class ImprovedPID:
         self.axis = axis
         self.integral = 0.0
         self.prev_measurement = 0.0
-        # 💡 使用微分先行或对测量值微分，增加阻尼
         self.d_term_sign = -1.0
 
     def update(self, setpoint, measurement, dt):
         if dt <= 1e-6: dt = 0.001
         error = wrap_pi(setpoint - measurement) if self.axis == "yaw" else (setpoint - measurement)
-        # P 项
         p_term = self.kp * error
-        # I 项
         self.integral = np.clip(self.integral + error * dt, self.i_min, self.i_max)
         i_term = self.ki * self.integral
-        # D 项 (基于测量值的变化率，防止指令跳变导致的震荡)
         measurement_rate = (measurement - self.prev_measurement) / dt
         d_term = self.kd * measurement_rate * self.d_term_sign
         self.prev_measurement = measurement
@@ -99,11 +95,18 @@ class DroneControllerSim(Node):
         self._init_ros()
         self._init_data()
         self._init_controllers()
-        self.last_loop_time = time.time()
+        
+        current_time_sec = self.get_clock().now().nanoseconds / 1e9
+        self.last_loop_time = current_time_sec
         self.loop_count = 0
-        self.last_log_time = time.time()
+        self.last_log_time = current_time_sec
+        
+        # 为了更好地观察掉高，新增记录姿态目标的变量
+        self.cmd_log_r = 0.0
+        self.cmd_log_p = 0.0
+        
         self.control_timer = self.create_timer(self.EXPECTED_DT / 2.0, self._control_loop)
-        self.get_logger().info(f"✅ 底层飞控 (稳定版) 启动 | 抑制震荡模式")
+        self.get_logger().info(f"✅ 底层飞控 (增强混控版) 启动 | 防掉高策略已激活")
 
     def _init_ros(self):
         qos_reliable = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
@@ -124,9 +127,8 @@ class DroneControllerSim(Node):
         self.pid_roll_rate = ImprovedPID(**cfg.PID_ROLL_RATE, axis="roll_rate")
         self.pid_pitch_rate = ImprovedPID(**cfg.PID_PITCH_RATE, axis="pitch_rate")
         self.pid_yaw_rate = ImprovedPID(**cfg.PID_YAW_RATE, axis="yaw_rate")
-        # 💡 物理约束调优
-        self.torque_limit_rp = 0.8  # 💡 增加到0.8，提高力矩上限
-        self.torque_limit_yaw = 0.5  # 💡 微增
+        self.torque_limit_rp = 0.8 
+        self.torque_limit_yaw = 0.5 
         self.yaw_dshot_gain = 0.3
 
     def _reset_controllers(self):
@@ -143,6 +145,7 @@ class DroneControllerSim(Node):
     def _cmd_callback(self, msg: Vector3):
         with self.lock:
             self.cmd["roll"], self.cmd["pitch"], self.cmd["throttle"] = msg.x, msg.y, msg.z
+            self.cmd_log_r, self.cmd_log_p = msg.x, msg.y
 
     def _yaw_cb(self, msg: Float64):
         with self.lock: self.cmd["yaw_sp"] = msg.data
@@ -157,48 +160,58 @@ class DroneControllerSim(Node):
                 self.get_logger().info(f"⚡ {'已解锁' if self.is_armed else '已上锁'}")
 
     def _control_loop(self):
-        now = time.time()
+        now = self.get_clock().now().nanoseconds / 1e9
         elapsed = now - self.last_loop_time
+        if elapsed < 0: elapsed = self.EXPECTED_DT
         if elapsed < (self.EXPECTED_DT * 0.8): return
+        
         real_dt = elapsed
         self.last_loop_time = now
         self.loop_count += 1
+        
         if not self.is_armed:
             self._publish_motor_speed([self.PWM_IDLE]*4); return
+            
         with self.lock:
             target_r, target_p = self.cmd["roll"], self.cmd["pitch"]
             if self.cmd["yaw_sp"] is None: self.cmd["yaw_sp"] = self.state["yaw"]
             target_y = self.cmd["yaw_sp"]
-            # 角度环 (P)
+            
             quat_sp = eul2quat(target_r, target_p, target_y)
             quat_curr = self.state["quat"]
             if np.dot(quat_sp, quat_curr) < 0: quat_sp = -quat_sp
             q_e = calculateErrorQuaternion(quat_sp, quat_curr)
             sign = 1.0 if q_e[0] >= 0 else -1.0
-            k_angle = 12.0  # 💡 增加到12，提高角度到角速度响应
+            
+            # 💡 稍微降低一点点 P，让姿态修正稍微平滑一点，减少对升力的抽干效应
+            k_angle = 10.0 
             target_rate_roll = sign * q_e[1] * k_angle * cfg.Kp_ANGLE
             target_rate_pitch = sign * q_e[2] * k_angle * cfg.Kp_ANGLE
             target_rate_yaw = sign * q_e[3] * k_angle * cfg.Kp_ANGLE
-            # 💡 增加角速度限幅：物理上不允许瞬间极速旋转
-            RATE_LIMIT = 6.0  # 💡 增加到6 rad/s，提高上限
+            
+            RATE_LIMIT = 6.0 
             target_rate_roll = np.clip(target_rate_roll, -RATE_LIMIT, RATE_LIMIT)
             target_rate_pitch = np.clip(target_rate_pitch, -RATE_LIMIT, RATE_LIMIT)
-            # 角速度环 (PID)
+            
             gyro = self.state["gyro"]
             torque_roll = self.pid_roll_rate.update(target_rate_roll, gyro[0], real_dt)
             torque_pitch = self.pid_pitch_rate.update(target_rate_pitch, gyro[1], real_dt)
             torque_yaw = self.pid_yaw_rate.update(target_rate_yaw, gyro[2], real_dt)
-            # 力矩限幅
+            
             torque_roll = np.clip(torque_roll, -self.torque_limit_rp, self.torque_limit_rp)
             torque_pitch = np.clip(torque_pitch, -self.torque_limit_rp, self.torque_limit_rp)
             torque_yaw = np.clip(torque_yaw, -self.torque_limit_yaw, self.torque_limit_yaw)
-            # 动力混控 (带有升力保底逻辑)
+            
+            # 👇 调用强化版动力混控
             motor_pwm = self._motor_mix(self.cmd["throttle"], torque_roll, torque_pitch, torque_yaw)
             self._publish_motor_speed(motor_pwm)
+            
         if now - self.last_log_time > 1.0:
+            # 💡 日志增强：增加了 Cmd_Deg，让你清楚看到控制器想让飞机倾斜多少度，以及电机是怎么响应的
             self.get_logger().info(
-                f"HZ:{self.loop_count} | PWM:[{np.min(motor_pwm):.0f}-{np.max(motor_pwm):.0f}] | "
-                f"R/P/Y_Deg:{np.rad2deg(self.state['roll']):.1f}/{np.rad2deg(self.state['pitch']):.1f}/{np.rad2deg(self.state['yaw']):.1f}"
+                f"HZ:{self.loop_count} | PWM:[{np.min(motor_pwm):.0f} - {np.max(motor_pwm):.0f}] | "
+                f"Cmd_Deg(R/P):{np.rad2deg(self.cmd_log_r):.1f}/{np.rad2deg(self.cmd_log_p):.1f} | "
+                f"Act_Deg(R/P/Y):{np.rad2deg(self.state['roll']):.1f}/{np.rad2deg(self.state['pitch']):.1f}/{np.rad2deg(self.state['yaw']):.1f}"
             )
             self.last_log_time = now; self.loop_count = 0
 
@@ -207,17 +220,41 @@ class DroneControllerSim(Node):
         ty_gain = ty * self.yaw_dshot_gain
         M = np.array(cfg.MIX_MATRIX)
         scale = cfg.DSHOT_SCALE
+        
+        # 计算维持姿态所需的各个电机差动量 (力矩)
         combined_torque = (M[:, 0] * tr + M[:, 1] * tp + M[:, 2] * ty_gain) * scale
-        # 💡 动态压缩：给油门留出余量，防止姿态控制彻底抽干升力
+        
+        # ==============================================================
+        # 💡 [防掉高核心强化]：动态推力保底与压缩策略
+        # ==============================================================
+        # 1. 如果姿态修正需要的力矩太大，按比例压缩力矩，保证“高度优先”
         max_t = np.max(np.abs(combined_torque))
-        if max_t > 400.0: combined_torque = combined_torque * (400.0 / max_t)
+        # 设定允许用于姿态控制的最大 PWM 余量（不能让姿态控制占用全部动力）
+        torque_budget = 350.0 
+        if max_t > torque_budget: 
+            combined_torque = combined_torque * (torque_budget / max_t)
+            
+        # 2. 基础相加
         motors = base + combined_torque
-        # 饱和处理
+        
+        # 3. 顶端饱和处理：如果有电机超过 2000，为了保持姿态力矩比例，所有电机一起减速
         mm_max = np.max(motors)
-        if mm_max > 2000.0: motors -= (mm_max - 2000.0)
+        if mm_max > 2000.0: 
+            motors -= (mm_max - 2000.0)
+            
+        # 4. 💡 底端防掉高处理：【动态保底机制】
         mm_min = np.min(motors)
-        # 💡 核心保命线：强制 1150 PWM 最小升力，防止停转侧翻
-        if mm_min < 1150.0: motors += (1150.0 - mm_min)
+        
+        # 根据当前的油门(base)，计算一个合理的“最低允许转速”。
+        # 假设悬停油门是 1550，做大机动时如果某个电机掉到 1150，升力损失极大。
+        # 我们规定：最低转速不能低于 (基础油门 - 200) 或者 绝对安全线 1350。
+        dynamic_min_pwm = max(1350.0, base - 200.0) 
+        
+        # 如果有电机被压得太低，为了保高度，所有电机一起提速！
+        if mm_min < dynamic_min_pwm: 
+            motors += (dynamic_min_pwm - mm_min)
+            
+        # 再次兜底裁剪，确保严格在物理限制内
         return np.clip(motors, cfg.DSHOT_MIN, cfg.DSHOT_MAX)
 
     def _publish_motor_speed(self, pwms):

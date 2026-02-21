@@ -9,7 +9,8 @@ from std_msgs.msg import String, Float64MultiArray
 from nav_msgs.msg import Odometry
 import math
 import numpy as np
-import time
+# 移除 time 模块
+# import time
 
 def wrap_pi(a: float) -> float:
     return float(np.arctan2(np.sin(a), np.cos(a)))
@@ -17,7 +18,7 @@ def wrap_pi(a: float) -> float:
 class PositionCmdNode(Node):
     def __init__(self):
         super().__init__("position_cmd_node")
-        self.hold_point = [1.0, 1.0, 4.0, 0.0]  # [x, y, z, yaw]
+        self.hold_point = [0.5, 0.0, 1.5, 0.0] # [x, y, z, yaw]
         self.path_config = {
             "center": [0.0, 0.0],
             "radius": 1.5,
@@ -30,16 +31,16 @@ class PositionCmdNode(Node):
             "land_error_tol_z": 0.05,
             "cmd_rate_hz": 50.0,
             "log_interval": 0.2,
-            "target_speed": 0.15,  # 新增：目标移动速度 (m/s)
+            "target_speed": 0.15, # 新增：目标移动速度 (m/s)
         }
         # 计算角速度和总角度
-        self.omega = self.path_config["target_speed"] / self.path_config["radius"]  # rad/s
+        self.omega = self.path_config["target_speed"] / self.path_config["radius"] # rad/s
         self.total_angle = 2 * math.pi * self.path_config["target_laps"]
         # 计算起点
         self.start_x = self.path_config["center"][0] + self.path_config["radius"] * math.cos(0)
         self.start_y = self.path_config["center"][1] + self.path_config["radius"] * math.sin(0)
         self.get_logger().info(f"圆起点: ({self.start_x:.2f}, {self.start_y:.2f}, {self.path_config['fixed_z']:.2f})")
-
+        
         self.sub_mode = self.create_subscription(String, "/drone_mode", self._mode_cb, 10)
         self.sub_odom = self.create_subscription(Odometry, "/rotors/odometry", self._odom_cb, 10)
         self.pub_setpoint = self.create_publisher(Float64MultiArray, "/pos_setpoint", 10)
@@ -48,14 +49,19 @@ class PositionCmdNode(Node):
         self.real_yaw = 0.0
         self.path_state = "TAKEOFF"
         self.current_target_point = None
-        self.fly_start_time = 0.0  # 新增：飞行开始时间
-        self.last_log_time = time.time()
+        
+        # 💡 使用 ROS 仿真时钟初始化时间
+        current_time_sec = self.get_clock().now().nanoseconds / 1e9
+        self.fly_start_time = 0.0 # 新增：飞行开始时间
+        self.last_log_time = current_time_sec
         self.last_publish_z = 0.0
+        
         # ========== 新增：频率统计变量 ==========
-        self.cmd_pub_count = 0  # 目标点发布次数
-        self.last_pub_time = time.time()  # 上一次发布时间
-        self.pub_interval_history = []  # 发布间隔历史
-        self.last_freq_log_time = time.time()  # 频率日志上次输出时间
+        self.cmd_pub_count = 0 # 目标点发布次数
+        self.last_pub_time = current_time_sec # 上一次发布时间
+        self.pub_interval_history = [] # 发布间隔历史
+        self.last_freq_log_time = current_time_sec # 频率日志上次输出时间
+        
         self.timer = self.create_timer(1.0 / self.path_config["cmd_rate_hz"], self._timer_cb)
         self.get_logger().info("✅ PositionCmdNode (连续轨迹追踪版) 启动完成 | 配置发布频率: {:.1f}Hz".format(self.path_config["cmd_rate_hz"]))
 
@@ -83,7 +89,9 @@ class PositionCmdNode(Node):
         self.real_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     def _print_detailed_log(self):
-        now = time.time()
+        # 💡 使用 ROS 仿真时钟
+        now = self.get_clock().now().nanoseconds / 1e9
+        
         if now - self.last_log_time < self.path_config["log_interval"]:
             return
         if self.current_target_point is None:
@@ -98,7 +106,7 @@ class PositionCmdNode(Node):
             f"XY误差:{xy_error:.2f}m | Z误差:{z_error:.2f}m"
         )
         if self.current_mode == "PATH" and self.path_state == "FLY_POINTS":
-            elapsed = time.time() - self.fly_start_time
+            elapsed = now - self.fly_start_time
             theta = self.omega * elapsed
             lap_progress = theta / (2 * math.pi)
             log_core += f" | 进度:{lap_progress:.2f} 圈"
@@ -107,7 +115,9 @@ class PositionCmdNode(Node):
 
     # ========== 新增：强化发布函数的日志 ==========
     def _publish_setpoint(self, x, y, z, yaw):
-        now = time.time()
+        # 💡 使用 ROS 仿真时钟
+        now = self.get_clock().now().nanoseconds / 1e9
+        
         # 计算发布间隔
         pub_interval = now - self.last_pub_time if self.last_pub_time > 0 else 0.0
         self.pub_interval_history.append(pub_interval)
@@ -117,6 +127,7 @@ class PositionCmdNode(Node):
         # 计算实际发布频率
         avg_interval = np.mean(self.pub_interval_history) if self.pub_interval_history else 0.0
         real_pub_freq = 1.0 / avg_interval if avg_interval > 0 else 0.0
+        
         # 发布消息
         msg = Float64MultiArray()
         msg.data = [float(x), float(y), float(z), float(yaw)]
@@ -124,6 +135,7 @@ class PositionCmdNode(Node):
         self.last_publish_z = z
         self.cmd_pub_count += 1
         self.last_pub_time = now
+        
         # 每1秒输出一次频率统计（避免刷屏）
         if now - self.last_freq_log_time > 1.0:
             self.get_logger().info(
@@ -138,7 +150,9 @@ class PositionCmdNode(Node):
 
     def _timer_cb(self):
         # ========== 新增：定时器回调频率监控 ==========
-        timer_cb_start = time.time()
+        # 💡 使用 ROS 仿真时钟
+        timer_cb_start = self.get_clock().now().nanoseconds / 1e9
+        
         if self.current_mode == "MANUAL":
             return
         if self.current_mode == "HOLD":
@@ -153,10 +167,10 @@ class PositionCmdNode(Node):
                 self.current_target_point = [self.start_x, self.start_y, target_z, self.path_config["fixed_yaw"]]
                 if abs(self.real_pos_w[2] - target_z) < self.path_config["error_tol_z_takeoff"]:
                     self.path_state = "FLY_POINTS"
-                    self.fly_start_time = time.time()
+                    self.fly_start_time = self.get_clock().now().nanoseconds / 1e9
                     self.get_logger().info("🚀 起飞完成，开始画圆！")
             elif self.path_state == "FLY_POINTS":
-                elapsed = time.time() - self.fly_start_time
+                elapsed = (self.get_clock().now().nanoseconds / 1e9) - self.fly_start_time
                 theta = self.omega * elapsed
                 if theta >= self.total_angle:
                     self.path_state = "RETURN"
@@ -185,9 +199,10 @@ class PositionCmdNode(Node):
             elif self.path_state == "DONE":
                 self._publish_setpoint(self.hold_point[0], self.hold_point[1], -0.1, self.hold_point[3])
             self._print_detailed_log()
+            
         # ========== 新增：定时器回调耗时监控 ==========
-        cb_elapsed = (time.time() - timer_cb_start) * 1000  # 毫秒
-        if cb_elapsed > 5.0:  # 回调耗时超过5ms时告警（卡壳特征）
+        cb_elapsed = ((self.get_clock().now().nanoseconds / 1e9) - timer_cb_start) * 1000 # 毫秒
+        if cb_elapsed > 5.0: # 回调耗时超过5ms时告警（卡壳特征）
             self.get_logger().warn(
                 f"⚠️ PositionCmd 定时器回调耗时过长 | "
                 f"耗时:{cb_elapsed:.1f}ms | "

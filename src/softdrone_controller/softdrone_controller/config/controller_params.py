@@ -28,7 +28,7 @@ PID_PITCH_ANGLE = {"kp": 0.0, "ki": 0.0, "kd": 0.0, "i_max": 0.03, "i_min": -0.0
 PID_YAW_ANGLE = {"kp": 0.12, "ki": 0.0, "kd": 0.00, "i_max": 0.02, "i_min": -0.02}
 
 # 速率内环PID参数
-PID_ROLL_RATE = {"kp": 0.5, "ki": 0.0, "kd": 0.05, "i_max": 0.3, "i_min": -0.3}
+PID_ROLL_RATE = {"kp": 0.3, "ki": 0.0, "kd": 0.05, "i_max": 0.3, "i_min": -0.3}
 PID_PITCH_RATE = {"kp": 0.5, "ki": 0.0, "kd": 0.05, "i_max": 0.3, "i_min": -0.3}
 PID_YAW_RATE = {"kp": 0.1, "ki": 0.0, "kd": 0.0, "i_max": 0.2, "i_min": -0.2}
 
@@ -42,16 +42,16 @@ HOVER_VALUE = 1860.0
 HOVER_THROTTLE_RATIO = (HOVER_VALUE - 1000)/1000 
 MIN_DESCEND_DSHOT_VALUE = 720
 MIN_DESCEND_THROTTLE_RATIO = 0.3
-POSITION_VXY_LIMIT = 0.9
-POSITION_VZ_LIMIT = 1.5
+POSITION_VXY_LIMIT = 0.6
+POSITION_VZ_LIMIT = 0.5
 POSITION_FILTER_ALPHA_POS = 0.6
 POSITION_XY_MAX_ANGLE_RATE = 3.0
 # XY位置控制参数（位置误差→姿态角）
-POSITION_XY_KP = 0.4 # 比例增益（rad/m）
-POSITION_XY_KI = 0.1     # 积分增益
-POSITION_XY_KD = 0.12  # 微分增益
+POSITION_XY_KP = 0.47
+POSITION_XY_KI = 0.0
+POSITION_XY_KD = 0.3
 POSITION_XY_INT_LIMIT = 0.9   # XY积分限幅
-POSITION_XY_MAX_ANGLE = 1.3 # 最大倾角指令（rad）
+POSITION_XY_MAX_ANGLE = 0.6# 最大倾角指令（rad）
 
 # ======== ✅ 新增：PATH 模式专用“更紧”的跟踪增益（不影响 HOLD/MANUAL）========
 # 说明：
@@ -60,20 +60,20 @@ POSITION_XY_MAX_ANGLE = 1.3 # 最大倾角指令（rad）
 
 
 # Z高度控制参数（高度误差→油门）
-POSITION_Z_KP = 1.3# 比例增益（throttle/m）
-POSITION_Z_KI = 0.1   # 积分增益
-POSITION_Z_KD = 0.7# 微分增益
+POSITION_Z_KP = 0.65 
+POSITION_Z_KI = 0.002# 积分增益
+POSITION_Z_KD = 0.45   # 微分增益
 POSITION_Z_INT_LIMIT = 1.2   # Z积分限幅
 #POSITION_Z_THROTTLE_RANGE = 300  # 油门增量范围
 THROTTLE_GAIN_Z = 250.0
 # 速度环 (输出期望加速度)
-VELOCITY_XY_KP = 0.5
-VELOCITY_XY_KI = 0.1
-VELOCITY_XY_KD = 0.04
+VELOCITY_XY_KP = 0.275
+VELOCITY_XY_KI = 0.0
+VELOCITY_XY_KD = 0.08
 VELOCITY_XY_INT_LIMIT = 0.25 # 加速度上限
-VELOCITY_Z_KP = 0.5
-VELOCITY_Z_KI = 0.1
-VELOCITY_Z_KD = 0.12
+VELOCITY_Z_KP = 0.25
+VELOCITY_Z_KI = 0.0
+VELOCITY_Z_KD = 0.08
 VELOCITY_Z_INT_LIMIT = 5.0 # 加速度上限
 
 # 位置控制滤波器参数
