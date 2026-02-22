@@ -59,7 +59,6 @@ class FirstOrderLPF:
     def reset(self):
         self.inited = False
 
-# 💡 [保持你的原版] 原汁原味的标准 PID 类，没有做任何修改
 class PID:
     def __init__(self, kp, ki, kd, i_max=0.5, i_min=-0.5):
         self.kp, self.ki, self.kd = float(kp), float(ki), float(kd)
@@ -100,10 +99,9 @@ class PositionController(Node):
         self.last_odom_time = 0.0; self.last_pos = np.zeros(3)
         self.first_odom_flag = True 
 
-        # 🎯 目标点完全解耦！删除了原有的高度缓升逻辑相关的变量
         self.target_pos_w = np.array([0.0, 0.0, 0.0])
         self.target_yaw = 0.0
-        self.is_taking_off = False # 💡 [新增] 专门用于判断是否正在执行“地面起飞”
+        self.is_taking_off = False 
         
         self.path_timeout = 2.0
         self.manual_cmd_cache = Vector3()
@@ -131,7 +129,7 @@ class PositionController(Node):
         self.pub_att_cmd = self.create_publisher(Vector3, '/attitude_position_cmd', 10)
         self.pub_yaw_cmd = self.create_publisher(Float64, '/yaw_position_cmd', 10)
         
-        self.get_logger().info(f"✅ PositionController 启动 | 智能起飞判定 + Z轴PID全权解耦版")
+        self.get_logger().info(f"✅ PositionController 启动 | XY轴解耦参数版")
 
     def _init_filters_and_pids(self):
         self.x_f = AlphaFilter(alpha=cfg.POSITION_FILTER_ALPHA_POS)
@@ -140,11 +138,13 @@ class PositionController(Node):
         self.vx_lpf = FirstOrderLPF(tau=0.15); self.vy_lpf = FirstOrderLPF(tau=0.15); self.vz_lpf = FirstOrderLPF(tau=0.15) 
         self.vx_sp_lpf = FirstOrderLPF(tau=0.04); self.vy_sp_lpf = FirstOrderLPF(tau=0.04); self.vz_sp_lpf = FirstOrderLPF(tau=0.06)
         
-        self.pos_x_pid = PID(cfg.POSITION_XY_KP, cfg.POSITION_XY_KI, cfg.POSITION_XY_KD, cfg.POSITION_XY_INT_LIMIT, -cfg.POSITION_XY_INT_LIMIT)
-        self.pos_y_pid = PID(cfg.POSITION_XY_KP, cfg.POSITION_XY_KI, cfg.POSITION_XY_KD, cfg.POSITION_XY_INT_LIMIT, -cfg.POSITION_XY_INT_LIMIT)
+        # 💡 [解耦修改]: 分别读取 X 轴和 Y 轴的独立参数
+        self.pos_x_pid = PID(cfg.POSITION_X_KP, cfg.POSITION_X_KI, cfg.POSITION_X_KD, cfg.POSITION_X_INT_LIMIT, -cfg.POSITION_X_INT_LIMIT)
+        self.pos_y_pid = PID(cfg.POSITION_Y_KP, cfg.POSITION_Y_KI, cfg.POSITION_Y_KD, cfg.POSITION_Y_INT_LIMIT, -cfg.POSITION_Y_INT_LIMIT)
         self.pos_z_pid = PID(cfg.POSITION_Z_KP, cfg.POSITION_Z_KI, cfg.POSITION_Z_KD, cfg.POSITION_Z_INT_LIMIT, -cfg.POSITION_Z_INT_LIMIT)
-        self.vel_x_pid = PID(cfg.VELOCITY_XY_KP, cfg.VELOCITY_XY_KI, cfg.VELOCITY_XY_KD, cfg.VELOCITY_XY_INT_LIMIT, -cfg.VELOCITY_XY_INT_LIMIT)
-        self.vel_y_pid = PID(cfg.VELOCITY_XY_KP, cfg.VELOCITY_XY_KI, cfg.VELOCITY_XY_KD, cfg.VELOCITY_XY_INT_LIMIT, -cfg.VELOCITY_XY_INT_LIMIT)
+        
+        self.vel_x_pid = PID(cfg.VELOCITY_X_KP, cfg.VELOCITY_X_KI, cfg.VELOCITY_X_KD, cfg.VELOCITY_X_INT_LIMIT, -cfg.VELOCITY_X_INT_LIMIT)
+        self.vel_y_pid = PID(cfg.VELOCITY_Y_KP, cfg.VELOCITY_Y_KI, cfg.VELOCITY_Y_KD, cfg.VELOCITY_Y_INT_LIMIT, -cfg.VELOCITY_Y_INT_LIMIT)
         self.vel_z_pid = PID(cfg.VELOCITY_Z_KP, cfg.VELOCITY_Z_KI, cfg.VELOCITY_Z_KD, cfg.VELOCITY_Z_INT_LIMIT, -cfg.VELOCITY_Z_INT_LIMIT)
         
         self.last_roll_cmd = 0.0; self.last_pitch_cmd = 0.0
@@ -158,10 +158,7 @@ class PositionController(Node):
 
     def setpoint_callback(self, msg: Float64MultiArray):
         if len(msg.data) >= 3:
-            # 🎯 无条件听命于上层的 Z 指令，不干涉高度控制
-            self.target_pos_w[0] = msg.data[0]
-            self.target_pos_w[1] = msg.data[1]
-            self.target_pos_w[2] = msg.data[2]
+            self.target_pos_w[0], self.target_pos_w[1], self.target_pos_w[2] = msg.data[0], msg.data[1], msg.data[2]
             self.target_yaw = 0.0
             self.last_path_time = self.get_clock().now().nanoseconds / 1e9
 
@@ -233,10 +230,6 @@ class PositionController(Node):
             self.current_mode = msg.data
             if self.current_mode != "MANUAL":
                 self._reset_state() 
-                
-                # 💡 [关键修复] 智能起飞判定：
-                # 如果此时飞机在地面（低于 0.5m），切模式时进入“起飞姿态锁定”状态
-                # 如果已经在空中，直接允许全部控制，绝不卡死！
                 if self.pos_w[2] < 0.5:
                     self.is_taking_off = True
                     self.get_logger().info("🚀 检测到在地面起飞：开启姿态锁定，先上升高度...")
@@ -261,17 +254,13 @@ class PositionController(Node):
             if now - self.last_debug_print > 2.0:
                 self.get_logger().warn(f"⚠️ 指令超时 ({path_age:.1f}s)，维持最后目标点")
                 
-        # 🎯 获取 position_cmd 发送的目标高度
         current_target_z = self.target_pos_w[2]
                 
-        # 💡 [关键修复] 检查起飞是否完成
         if getattr(self, 'is_taking_off', False):
-            # 当飞机爬升到距离目标高度不到 0.2m 时，解除姿态锁定，允许其在 XY 面平移
             if abs(self.pos_w[2] - current_target_z) < 0.2:
                 self.is_taking_off = False
                 self.get_logger().info("✅ 接近目标高度，解除姿态锁定，允许XY方向平移！")
                 
-        # 计算三轴误差 (无任何限制，直接计算)
         err_pos = np.clip([self.target_pos_w[0] - self.pos_w[0], 
                            self.target_pos_w[1] - self.pos_w[1], 
                            current_target_z - self.pos_w[2]], -2.0, 2.0)
@@ -279,13 +268,13 @@ class PositionController(Node):
         if abs(err_pos[0]) < 0.02: err_pos[0] = 0.0
         if abs(err_pos[1]) < 0.02: err_pos[1] = 0.0
         
-        # 1. 恢复你最原始的 PID 调用方式，计算期望速度
+        # 1. 计算期望速度
         v_target_w = np.zeros(3)
         v_target_w[0] = self.pos_x_pid.step(err_pos[0], dt_ctrl)
         v_target_w[1] = self.pos_y_pid.step(err_pos[1], dt_ctrl)
         v_target_w[2] = self.pos_z_pid.step(err_pos[2], dt_ctrl)
         
-        # 2. 期望速度滤波限幅 (决定了下降和上升的绝对最大速度，即 POSITION_VZ_LIMIT)
+        # 2. 期望速度滤波限幅
         v_target_w[0] = self.vx_sp_lpf.update(np.clip(v_target_w[0], -self.vxy_limit, self.vxy_limit), dt_ctrl)
         v_target_w[1] = self.vy_sp_lpf.update(np.clip(v_target_w[1], -self.vxy_limit, self.vxy_limit), dt_ctrl)
         v_target_w[2] = self.vz_sp_lpf.update(np.clip(v_target_w[2], -self.vz_limit, self.vz_limit), dt_ctrl)
@@ -298,12 +287,11 @@ class PositionController(Node):
         
         # 4. 速度PID计算姿态角
         if getattr(self, 'is_taking_off', False):
-            # 如果正在地面起飞阶段，强行锁死 XY 姿态，只往上窜
             pitch_cmd_raw = 0.0 
             roll_cmd_raw = 0.0
             state_str = "TAKEOFF-LOCKED"
         else:
-            # 💡 [保持你的原版逻辑]: 恢复了你原来的 PID 符号
+            # 💡 [控制逻辑未变]
             pitch_cmd_raw = self.vel_x_pid.step(v_err_b_x, dt_ctrl)
             roll_cmd_raw  = -self.vel_y_pid.step(v_err_b_y, dt_ctrl)
             state_str = "XY-TRACKING"
@@ -313,7 +301,7 @@ class PositionController(Node):
         pitch_cmd_rad = self._slew(np.clip(pitch_cmd_raw, -SAFE_TILT, SAFE_TILT), self.last_pitch_cmd, dt_ctrl, self.max_angle_rate)
         self.last_roll_cmd, self.last_pitch_cmd = roll_cmd_rad, pitch_cmd_rad
         
-        # 推力计算
+        # 5. 推力计算
         pid_z_out = self.vel_z_pid.step(v_err_w[2], dt_ctrl)
         base_ratio = self.hover_throttle_ratio + float(np.clip(pid_z_out, -0.4, 0.4))
         c_comp = min(float(np.clip(np.cos(roll_cmd_rad) * np.cos(pitch_cmd_rad), 0.25, 1.0)), float(np.clip(np.cos(self.roll_curr) * np.cos(self.pitch_curr), 0.25, 1.0))) 

@@ -9,7 +9,7 @@ import math
 
 from geometry_msgs.msg import Vector3
 from std_msgs.msg import String, Float64
-from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu          # ← 新增：使用真实IMU
 from actuator_msgs.msg import Actuators
 from softdrone_controller.config import controller_params as cfg
 
@@ -101,20 +101,24 @@ class DroneControllerSim(Node):
         self.loop_count = 0
         self.last_log_time = current_time_sec
         
-        # 为了更好地观察掉高，新增记录姿态目标的变量
         self.cmd_log_r = 0.0
         self.cmd_log_p = 0.0
         
         self.control_timer = self.create_timer(self.EXPECTED_DT / 2.0, self._control_loop)
-        self.get_logger().info(f"✅ 底层飞控 (增强混控版) 启动 | 防掉高策略已激活")
+        self.get_logger().info(f"✅ 底层飞控 (增强混控版) 启动 | 已切换为真实IMU模式（零作弊）")
 
     def _init_ros(self):
         qos_reliable = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=10)
-        qos_best_effort = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, depth=10)
+        
+        # ==================== 关键修改 ====================
+        # 删除原来的 odom 订阅，改为订阅真实IMU
+        self.sub_imu = self.create_subscription(Imu, "/imu", self._imu_callback, qos_reliable)
+        
+        # 保留其他订阅不变
         self.sub_cmd = self.create_subscription(Vector3, "/attitude_position_cmd", self._cmd_callback, qos_reliable)
         self.sub_yaw = self.create_subscription(Float64, "/yaw_position_cmd", self._yaw_cb, qos_reliable)
-        self.sub_odom = self.create_subscription(Odometry, "/rotors/odometry", self._odom_callback, qos_best_effort)
         self.sub_arm = self.create_subscription(String, "/drone_arm_cmd", self._arm_callback, qos_reliable)
+        
         self.pub_motor = self.create_publisher(Actuators, "/rotors/command/motor_speed", qos_reliable)
         self.lock = threading.Lock()
 
@@ -135,12 +139,18 @@ class DroneControllerSim(Node):
         self.pid_roll_rate.reset(); self.pid_pitch_rate.reset(); self.pid_yaw_rate.reset()
         self.cmd["yaw_sp"] = None
 
-    def _odom_callback(self, msg: Odometry):
+    # ==================== 核心替换：IMU回调 ====================
+    def _imu_callback(self, msg: Imu):
         with self.lock:
-            q = np.array([msg.pose.pose.orientation.w, msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z])
+            # 从真实IMU直接获取姿态和角速度
+            q = [msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z]
             self.state["quat"] = quat_normalize(q)
             self.state["roll"], self.state["pitch"], self.state["yaw"] = quat_to_eul(q)
-            self.state["gyro"] = np.array([msg.twist.twist.angular.x, msg.twist.twist.angular.y, msg.twist.twist.angular.z])
+            self.state["gyro"] = np.array([
+                msg.angular_velocity.x,
+                msg.angular_velocity.y,
+                msg.angular_velocity.z
+            ])
 
     def _cmd_callback(self, msg: Vector3):
         with self.lock:
@@ -159,6 +169,7 @@ class DroneControllerSim(Node):
                     self._publish_motor_speed([self.PWM_IDLE]*4)
                 self.get_logger().info(f"⚡ {'已解锁' if self.is_armed else '已上锁'}")
 
+    # ==================== 以下所有代码完全不动 ====================
     def _control_loop(self):
         now = self.get_clock().now().nanoseconds / 1e9
         elapsed = now - self.last_loop_time
@@ -183,7 +194,6 @@ class DroneControllerSim(Node):
             q_e = calculateErrorQuaternion(quat_sp, quat_curr)
             sign = 1.0 if q_e[0] >= 0 else -1.0
             
-            # 💡 稍微降低一点点 P，让姿态修正稍微平滑一点，减少对升力的抽干效应
             k_angle = 10.0 
             target_rate_roll = sign * q_e[1] * k_angle * cfg.Kp_ANGLE
             target_rate_pitch = sign * q_e[2] * k_angle * cfg.Kp_ANGLE
@@ -202,12 +212,10 @@ class DroneControllerSim(Node):
             torque_pitch = np.clip(torque_pitch, -self.torque_limit_rp, self.torque_limit_rp)
             torque_yaw = np.clip(torque_yaw, -self.torque_limit_yaw, self.torque_limit_yaw)
             
-            # 👇 调用强化版动力混控
             motor_pwm = self._motor_mix(self.cmd["throttle"], torque_roll, torque_pitch, torque_yaw)
             self._publish_motor_speed(motor_pwm)
             
         if now - self.last_log_time > 1.0:
-            # 💡 日志增强：增加了 Cmd_Deg，让你清楚看到控制器想让飞机倾斜多少度，以及电机是怎么响应的
             self.get_logger().info(
                 f"HZ:{self.loop_count} | PWM:[{np.min(motor_pwm):.0f} - {np.max(motor_pwm):.0f}] | "
                 f"Cmd_Deg(R/P):{np.rad2deg(self.cmd_log_r):.1f}/{np.rad2deg(self.cmd_log_p):.1f} | "
@@ -221,40 +229,25 @@ class DroneControllerSim(Node):
         M = np.array(cfg.MIX_MATRIX)
         scale = cfg.DSHOT_SCALE
         
-        # 计算维持姿态所需的各个电机差动量 (力矩)
         combined_torque = (M[:, 0] * tr + M[:, 1] * tp + M[:, 2] * ty_gain) * scale
         
-        # ==============================================================
-        # 💡 [防掉高核心强化]：动态推力保底与压缩策略
-        # ==============================================================
-        # 1. 如果姿态修正需要的力矩太大，按比例压缩力矩，保证“高度优先”
         max_t = np.max(np.abs(combined_torque))
-        # 设定允许用于姿态控制的最大 PWM 余量（不能让姿态控制占用全部动力）
         torque_budget = 350.0 
         if max_t > torque_budget: 
             combined_torque = combined_torque * (torque_budget / max_t)
             
-        # 2. 基础相加
         motors = base + combined_torque
         
-        # 3. 顶端饱和处理：如果有电机超过 2000，为了保持姿态力矩比例，所有电机一起减速
         mm_max = np.max(motors)
         if mm_max > 2000.0: 
             motors -= (mm_max - 2000.0)
             
-        # 4. 💡 底端防掉高处理：【动态保底机制】
         mm_min = np.min(motors)
-        
-        # 根据当前的油门(base)，计算一个合理的“最低允许转速”。
-        # 假设悬停油门是 1550，做大机动时如果某个电机掉到 1150，升力损失极大。
-        # 我们规定：最低转速不能低于 (基础油门 - 200) 或者 绝对安全线 1350。
         dynamic_min_pwm = max(1350.0, base - 200.0) 
         
-        # 如果有电机被压得太低，为了保高度，所有电机一起提速！
         if mm_min < dynamic_min_pwm: 
             motors += (dynamic_min_pwm - mm_min)
             
-        # 再次兜底裁剪，确保严格在物理限制内
         return np.clip(motors, cfg.DSHOT_MIN, cfg.DSHOT_MAX)
 
     def _publish_motor_speed(self, pwms):

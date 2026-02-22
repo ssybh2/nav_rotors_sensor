@@ -558,6 +558,13 @@
         <dimensions>3</dimensions>
         <update_rate>100</update_rate>
       </plugin>
+      <plugin
+        filename="ignition-gazebo-imu-system"
+        name="gz::sim::systems::Imu">
+        <sensor_name>imu_sensor</sensor_name>
+        <imu_topic>/imu</imu_topic>
+        <frame_id>swift_pico/base_link</frame_id>
+    </plugin>
 
   </model>
 </sdf>
